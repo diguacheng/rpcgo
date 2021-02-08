@@ -1,6 +1,7 @@
 package rpcgo
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"rpcgo/codec"
 	"sync"
+	"time"
 )
 
 type Call struct {
@@ -17,68 +19,69 @@ type Call struct {
 	Args          interface{} //	Args interface{}
 	Reply         interface{} //  Reply from the function
 	Error         error       // if error occurs, it will be set
-	Done          chan *Call  // Strobes when call is complete. //为了支持异步调用 
+	Done          chan *Call  // Strobes when call is complete. //为了支持异步调用
 }
 
-func (call *Call)done(){
-	call.Done<-call 
+func (call *Call) done() {
+	call.Done <- call
 }
 
-type Client struct{
-	cc codec.Codec   // 消息的解码器 和服务端类似，用来序列化将要发送出去的请求，以及反序列化接收到的响应。
-	opt *Option
-	sending sync.Mutex // protect following sending 是一个互斥锁，和服务端类似，为了保证请求的有序发送，即防止出现多个请求报文混淆。
-	header codec.Header      //header 是每个请求的消息头，header 只有在请求发送时才需要，而请求发送是互斥的，因此每个客户端只需要一个，声明在 Client 结构体中可以复用。
-	mu sync.Mutex // protect following
-	seq uint64  //seq 用于给发送的请求编号，每个请求拥有唯一编号。
-	pending map[uint64]*Call  //pending 存储未处理完的请求，键是编号，值是 Call 实例。
-	closing bool // user has called close 
-	shutdown bool // server has told us to stop
+type Client struct {
+	cc       codec.Codec // 消息的解码器 和服务端类似，用来序列化将要发送出去的请求，以及反序列化接收到的响应。
+	opt      *Option
+	sending  sync.Mutex       // protect following sending 是一个互斥锁，和服务端类似，为了保证请求的有序发送，即防止出现多个请求报文混淆。
+	header   codec.Header     //header 是每个请求的消息头，header 只有在请求发送时才需要，而请求发送是互斥的，因此每个客户端只需要一个，声明在 Client 结构体中可以复用。
+	mu       sync.Mutex       // protect following
+	seq      uint64           //seq 用于给发送的请求编号，每个请求拥有唯一编号。
+	pending  map[uint64]*Call //pending 存储未处理完的请求，键是编号，值是 Call 实例。
+	closing  bool             // user has called close
+	shutdown bool             // server has told us to stop
 	//closing 和 shutdown 任意一个值置为 true，则表示 Client 处于不可用的状态，但有些许的差别，
 	//closing 是用户主动关闭的，即调用 Close 方法，而 shutdown 置为 true 一般是有错误发生。
 }
 
-var _ io.Closer =(*Client)(nil)
+var _ io.Closer = (*Client)(nil)
 
-var ErrShutdown = errors.New("connection is shut down") 
+var ErrShutdown = errors.New("connection is shut down")
 
 //close the connection
-func (client *Client)Close()error{
+func (client *Client) Close() error {
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if client.closing{
+	if client.closing {
 		return ErrShutdown
 	}
-	client.closing=true
+	client.closing = true
 	return client.cc.Close()
-} 
+}
 
 // IsAvailable return true if the client does work
-func (client *Client)IsAvailable()bool{
+func (client *Client) IsAvailable() bool {
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	// server没关 且client也没关 
-	return !client.shutdown&&!client.closing
+	// server没关 且client也没关
+	return !client.shutdown && !client.closing
 }
 
 // 将参数 call 添加到 client.pending 中，并更新 client.seq。
 func (client *Client) registerCall(call *Call) (uint64, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if client.shutdown||client.closing{
-		return 0,ErrShutdown
+	if client.shutdown || client.closing {
+		return 0, ErrShutdown
 	}
-	call.Seq=client.seq 
-	client.pending[call.Seq]=call 
+	call.Seq = client.seq
+	client.pending[call.Seq] = call
 	client.seq++
-	return call.Seq,nil
+	return call.Seq, nil
 }
+
 //根据 seq，从 client.pending 中移除对应的 call，并返回。
 func (client *Client) removeCall(seq uint64) *Call {
 	client.mu.Lock()
-	defer client.mu.Unlock() 
-	call:=client.pending[seq]
-	delete(client.pending,seq)
+	defer client.mu.Unlock()
+	call := client.pending[seq]
+	delete(client.pending, seq)
 	return call
 }
 
@@ -95,16 +98,16 @@ func (client *Client) terminateCalls(err error) {
 	}
 }
 
-func (client *Client)receive(){
-	var err error 
-	for err==nil{
-		var h codec.Header 
-		if err=client.cc.ReadHeader(&h);err!=nil{
+func (client *Client) receive() {
+	var err error
+	for err == nil {
+		var h codec.Header
+		if err = client.cc.ReadHeader(&h); err != nil {
 			break
 		}
-		call:=client.removeCall(h.Seq)
-		switch{
-		case call==nil:
+		call := client.removeCall(h.Seq)
+		switch {
+		case call == nil:
 			// it usually means that Write partially failed
 			// and call was already removed.
 			err = client.cc.ReadBody(nil)
@@ -167,24 +170,24 @@ func parseOptions(opts ...*Option) (*Option, error) {
 	return opt, nil
 }
 
-// Dial connects to an RPC server at the specified network address
-func Dial(network, address string, opts ...*Option) (client *Client, err error) {
-	opt, err := parseOptions(opts...)
-	if err != nil {
-		return nil, err
-	}
-	conn, err := net.Dial(network, address)
-	if err != nil {
-		return nil, err
-	}
-	// close the connection if client is nil
-	defer func() {
-		if client == nil {
-			_ = conn.Close()
-		}
-	}()
-	return NewClient(conn, opt)
-}
+// // Dial connects to an RPC server at the specified network address
+// func Dial(network, address string, opts ...*Option) (client *Client, err error) {
+// 	opt, err := parseOptions(opts...)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	conn, err := net.Dial(network, address)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	// close the connection if client is nil
+// 	defer func() {
+// 		if client == nil {
+// 			_ = conn.Close()
+// 		}
+// 	}()
+// 	return NewClient(conn, opt)
+// }
 
 func (client *Client) send(call *Call) {
 	// make sure that the client will send a complete request
@@ -236,22 +239,65 @@ func (client *Client) Go(serviceMethod string, args, reply interface{}, done cha
 
 // Call invokes the named function, waits for it to complete,
 // and returns its error status.
-func (client *Client) Call(serviceMethod string, args, reply interface{}) error {
-	call := <-client.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
-	return call.Error
+// func (client *Client) Call(serviceMethod string, args, reply interface{}) error {
+// 	call := <-client.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
+// 	return call.Error
+// }
+
+// Call invokes the named function, waits for it to complete,
+// and returns its error status.
+func (client *Client) Call(ctx context.Context, serviceMethod string, args, reply interface{}) error {
+	call := client.Go(serviceMethod, args, reply, make(chan *Call, 1))
+	select {
+	case <-ctx.Done():
+		client.removeCall(call.Seq)
+		return errors.New("rpc client: call failed: " + ctx.Err().Error())
+	case call := <-call.Done:
+		return call.Error
+	}
 }
 
+type clientResult struct {
+	client *Client
+	err    error
+}
 
+type newClientFunc func(conn net.Conn, opt *Option) (client *Client, err error)
 
+// 这里超时一共有两部分 一个是
+func dialTimeout(f newClientFunc, network, address string, opts ...*Option) (client *Client, err error) {
+	opt, err := parseOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialTimeout(network, address, opt.ConnectTimeout)
+	if err != nil {
+		return nil, err
+	}
+	// close the connection if client is nil
+	defer func() {
+		if err != nil {
+			_ = conn.Close()
+		}
+	}()
+	ch := make(chan clientResult)
+	go func() {
+		client, err := f(conn, opt)
+		ch <- clientResult{client: client, err: err}
+	}()
+	if opt.ConnectTimeout == 0 {
+		result := <-ch
+		return result.client, result.err
+	}
+	select {
+	case <-time.After(opt.ConnectTimeout):
+		return nil, fmt.Errorf("rpc client: connect timeout: expect within %s", opt.ConnectTimeout)
+	case result := <-ch:
+		return result.client, result.err
+	}
+}
 
-
-
-
-
-
-
-
-
-
-
-
+// Dial connects to an RPC server at the specified network address
+func Dial(network, address string, opts ...*Option) (*Client, error) {
+	return dialTimeout(NewClient, network, address, opts...)
+}
