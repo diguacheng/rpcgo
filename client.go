@@ -345,4 +345,3 @@ func XDial(rpcAddr string, opts ...*Option) (*Client, error) {
 		return Dial(protocol, addr, opts...)
 	}
 }
-

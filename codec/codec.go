@@ -15,11 +15,11 @@ type Codec interface {
 	Write(*Header, interface{}) error
 }
 
-// 抽象出 Codec 接口的构造函数 
-type NewCodecFunc func(io.ReadWriteCloser)Codec
+// 抽象出 Codec 接口的构造函数
+type NewCodecFunc func(io.ReadWriteCloser) Codec
 
-// 用于定义不同的编码类型 
-type Type string 
+// 用于定义不同的编码类型
+type Type string
 
 const (
 	GobType  Type = "application/gob"

@@ -1,4 +1,4 @@
-package rpcgo 
+package rpcgo
 
 import (
 	"fmt"
@@ -54,4 +54,3 @@ func (server debugHTTP) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		_, _ = fmt.Fprintln(w, "rpc: error executing template:", err.Error())
 	}
 }
-
